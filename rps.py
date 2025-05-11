@@ -11,10 +11,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from collections import defaultdict, deque
-from torch.utils.data import DataLoader, TensorDataset
 
 class MetaAINeuralNetwork(nn.Module):
-    def __init__(self, input_size, hidden_size=32):  # Reduced hidden size for RTX 2050
+    def __init__(self, input_size, hidden_size=32):
         super(MetaAINeuralNetwork, self).__init__()
         self.network = nn.Sequential(
             nn.Linear(input_size, hidden_size),
@@ -158,10 +157,7 @@ class RPS_AI:
                 print(f"\nInvalid key '{key}'! Press R, P, S, or Q: ", end='', flush=True)
             time.sleep(0.01)
 
-    def get_test_keypress(self, pattern, move_idx):
-        return pattern[move_idx % len(pattern)]
-
-    def play_game(self, first_move=None, test_pattern=None):
+    def play_game(self):
         player_score = 0
         ai_score = 0
         self.history = []
@@ -169,30 +165,9 @@ class RPS_AI:
         self.backup_q_table()
         print("Press R (Rock), P (Paper), S (Scissors), or Q to quit.")
 
-        start_round = 1
-        if first_move in ['R', 'P', 'S']:
-            print(f"\nRound 1/15 - Your move: {first_move}")
-            player_moves.append(first_move)
-            ai_move, winner = self.play_round(first_move)
-            if not self.validate_q_table():
-                self.restore_q_table()
-                return None, None, None
-            self.save_q_table()
-            print(f"AI plays: {ai_move}")
-            print(f"Result: {winner}")
-            if winner == 'Player':
-                player_score += 1
-            elif winner == 'AI':
-                ai_score += 1
-            print(f"Score - You: {player_score}, AI: {ai_score}")
-            start_round = 2
-
-        for round_num in range(start_round, 16):
+        for round_num in range(1, 16):
             print(f"\nRound {round_num}/15 - Your move (R/P/S): ", end='', flush=True)
-            if test_pattern:
-                key = self.get_test_keypress(test_pattern, round_num - start_round)
-            else:
-                key = self.get_valid_keypress()
+            key = self.get_valid_keypress()
             if key == 'Q':
                 self.restore_q_table()
                 return None, None, None
@@ -204,7 +179,7 @@ class RPS_AI:
                 self.restore_q_table()
                 return None, None, None
             self.save_q_table()
-            print(f"\nAI plays: {ai_move}")
+            print(f"AI plays: {ai_move}")
             print(f"Result: {winner}")
             if winner == 'Player':
                 player_score += 1
@@ -218,7 +193,7 @@ class RPS_AI:
                 (player_score, ai_score), player_moves)
 
 class MetaAISupervisor:
-    def __init__(self, input_size=14, hidden_size=32, learning_rate=0.001, buffer_size=500):  # Reduced buffer size
+    def __init__(self, input_size=18, hidden_size=32, learning_rate=0.001, buffer_size=1000):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = MetaAINeuralNetwork(input_size, hidden_size).to(self.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
@@ -226,29 +201,45 @@ class MetaAISupervisor:
         self.replay_buffer = deque(maxlen=buffer_size)
         self.input_size = input_size
         self.min_history_length = 2
-        self.max_history_length = 4
+        self.max_history_length = 5
         self.min_alpha = 0.05
-        self.max_alpha = 0.3
-        self.min_epsilon = 0.01
-        self.max_epsilon = 0.1
+        self.max_alpha = 0.5
+        self.min_epsilon = 0.005
+        self.max_epsilon = 0.2
         self.min_freq_bias = 0.0
-        self.max_freq_bias = 0.2
+        self.max_freq_bias = 0.3
         self.model_file = "meta_ai_model.pth"
         self.load_model()
 
     def load_model(self):
         if os.path.exists(self.model_file):
             try:
-                self.model.load_state_dict(torch.load(self.model_file, map_location=self.device))
+                state_dict = torch.load(self.model_file, map_location=self.device)
+                self.model.load_state_dict(state_dict)
                 print("Loaded Meta-AI model from disk.")
             except Exception as e:
                 print(f"Error loading Meta-AI model: {e}. Starting with fresh model.")
+                if os.path.exists(self.model_file):
+                    backup_model = f"meta_ai_model_backup_{int(time.time())}.pth"
+                    shutil.move(self.model_file, backup_model)
+                    print(f"Backed up incompatible model to {backup_model}.")
 
     def save_model(self):
         try:
             torch.save(self.model.state_dict(), self.model_file)
         except Exception as e:
             print(f"Error saving Meta-AI model: {e}")
+
+    def get_ngram_counts(self, moves, n=3):
+        if len(moves) < n:
+            return 0
+        count = 0
+        for i in range(len(moves) - n + 1):
+            if all(moves[i + j] == moves[i] for j in range(n)):  # Check for n repeated moves
+                count += 1
+            elif n == 3 and moves[i:i+3] in [['S', 'R', 'P'], ['R', 'P', 'S'], ['P', 'S', 'R']]:  # Check for cycles
+                count += 1
+        return count / (len(moves) - n + 1) if len(moves) >= n else 0.0
 
     def get_features(self, ai, player_score, ai_score, player_moves):
         win_rate = ai_score / 15.0
@@ -265,28 +256,40 @@ class MetaAISupervisor:
         q_values = [q for state in ai.q_table.values() for q in state]
         q_mean = np.mean(q_values) if q_values else 0.0
         q_std = np.std(q_values) if q_values else 0.0
+        sss_ngram = self.get_ngram_counts(player_moves, n=3)  # Detect S,S,S or cycles
+        cycle_ngram = self.get_ngram_counts(player_moves, n=3)  # Overlaps with S,S,S for simplicity
+        # Add recent win rate (last 5 rounds)
+        recent_wins = sum(1 for i in range(max(0, len(player_moves)-5), len(player_moves))
+                         if ai.determine_winner(player_moves[i], ai.history[2*i+1])[0] == 'AI')
+        recent_win_rate = recent_wins / 5.0 if len(player_moves) >= 5 else ai_score / 15.0
+        # Add move entropy
+        move_probs = [move_counts[m] / 15.0 for m in ['R', 'P', 'S']]
+        move_entropy = -sum(p * np.log2(p + 1e-10) for p in move_probs if p > 0)
         current_params = [ai.history_length, ai.alpha, ai.epsilon, ai.freq_bias_weight]
         features = [
-            win_rate, tie_rate, loss_rate,
-            *move_freq,
-            repeat_rate, transition_rate,
-            q_mean, q_std,
-            *current_params
-        ]
+            win_rate, tie_rate, loss_rate,           # 3
+            *move_freq,                              # 3
+            repeat_rate, transition_rate,            # 2
+            q_mean, q_std,                           # 2
+            sss_ngram, cycle_ngram,                  # 2
+            recent_win_rate, move_entropy,           # 2
+            *current_params                          # 4
+        ]  # Total: 3 + 3 + 2 + 2 + 2 + 2 + 4 = 18
         return torch.tensor(features, dtype=torch.float32).to(self.device)
 
-    def get_target_params(self, ai_score, player_score):
+    def get_target_params(self, ai_score, player_score, tie_count):
         reward = ai_score - player_score
-        target_history_length = self.min_history_length + (self.max_history_length - self.min_history_length) * (reward + 15) / 30
-        target_alpha = self.min_alpha + (self.max_alpha - self.min_alpha) * (reward + 15) / 30
-        target_epsilon = self.max_epsilon - (self.max_epsilon - self.min_epsilon) * (reward + 15) / 30
-        target_freq_bias = self.min_freq_bias + (self.max_freq_bias - self.min_freq_bias) * (reward + 15) / 30
+        norm_reward = (reward + 15) / 30  # Normalize to [0, 1]
+        target_history_length = self.min_history_length + (self.max_history_length - self.min_history_length) * norm_reward
+        target_alpha = self.min_alpha + (self.max_alpha - self.min_alpha) * norm_reward
+        target_epsilon = self.max_epsilon - (self.max_epsilon - self.min_epsilon) * (norm_reward + tie_count / 15.0) / 2
+        target_freq_bias = self.min_freq_bias + (self.max_freq_bias - self.min_freq_bias) * norm_reward
         return torch.tensor([target_history_length, target_alpha, target_epsilon, target_freq_bias], dtype=torch.float32).to(self.device)
 
     def store_experience(self, features, target_params):
         self.replay_buffer.append((features, target_params))
 
-    def train(self, batch_size=16):  # Smaller batch size for RTX 2050
+    def train(self, batch_size=16):
         if len(self.replay_buffer) < batch_size:
             return None
         batch = random.sample(self.replay_buffer, batch_size)
@@ -298,6 +301,7 @@ class MetaAISupervisor:
         outputs = self.model(features)
         loss = self.criterion(outputs, targets)
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)  # Stabilize training
         self.optimizer.step()
         self.save_model()
         return loss.item()
@@ -321,41 +325,27 @@ class MetaAISupervisor:
 
 def main():
     ai = RPS_AI()
-    meta_ai = MetaAISupervisor(input_size=14, hidden_size=32, learning_rate=0.001, buffer_size=500)
-    patterns = [
-        ['P', 'S', 'R', 'R', 'S', 'P', 'P', 'R', 'S', 'S', 'P', 'R', 'P', 'S', 'R'],  # Mirror Trap
-        ['R', 'P', 'S', 'R', 'P', 'S', 'R', 'R', 'P', 'P', 'S', 'S', 'R', 'P', 'S'],  # Cycle Breaker
-        ['S', 'S', 'S', 'P', 'P', 'R', 'R', 'S', 'S', 'P', 'P', 'R', 'S', 'P', 'R'],  # Repetition Lure
-        ['P', 'S', 'R', 'P', 'S', 'R', 'S', 'P', 'R', 'S', 'P', 'R', 'P', 'S', 'R'],  # False Cycle
-        ['R', 'P', 'R', 'S', 'P', 'S', 'R', 'P', 'S', 'R', 'P', 'S', 'R', 'P', 'S'],  # Switchback Trap
-        ['P', 'P', 'S', 'S', 'R', 'R', 'P', 'S', 'R', 'P', 'S', 'R', 'P', 'S', 'R'],  # Double Deception
-        ['S', 'R', 'P', 'S', 'R', 'P', 'R', 'S', 'P', 'R', 'S', 'P', 'S', 'R', 'P'],  # Random Facade
-        ['R', 'S', 'P', 'R', 'S', 'P', 'S', 'R', 'P', 'S', 'R', 'P', 'R', 'S', 'P'],  # Memory Overload
-        ['P', 'R', 'S', 'P', 'P', 'R', 'S', 'S', 'P', 'R', 'R', 'S', 'P', 'S', 'R'],  # Bluffing Sequence
-        ['S', 'S', 'P', 'R', 'R', 'S', 'P', 'P', 'R', 'S', 'S', 'P', 'R', 'P', 'S'],  # Frequency Disruptor
-        ['R', 'S', 'P', 'P', 'S', 'R', 'R', 'P', 'S', 'S', 'R', 'P', 'P', 'S', 'R'],  # Reverse Mirror
-        ['P', 'R', 'S', 'R', 'P', 'S', 'P', 'R', 'S', 'P', 'R', 'S', 'R', 'P', 'S'],  # Pattern Feint
-        ['R', 'R', 'P', 'P', 'S', 'S', 'R', 'R', 'P', 'P', 'S', 'S', 'R', 'P', 'S'],  # Tie Inducer
-        ['S', 'P', 'R', 'S', 'R', 'P', 'S', 'P', 'R', 'S', 'R', 'P', 'S', 'P', 'R'],  # Chaos Switch
-        ['R', 'P', 'S', 'R', 'P', 'S', 'P', 'P', 'S', 'S', 'R', 'R', 'P', 'S', 'R'],  # Delayed Repeat
-    ]
+    meta_ai = MetaAISupervisor(input_size=18, hidden_size=32, learning_rate=0.001, buffer_size=1000)
+    game_count = 0
+    
     try:
-        for pattern_idx, pattern in enumerate(patterns, 1):
-            print(f"\nTesting Pattern {pattern_idx}: {pattern}")
-            for game_num in range(10):
-                print(f"\nGame {game_num + 1}")
-                winner, scores, player_moves = ai.play_game(test_pattern=pattern)
-                if winner is None:
-                    print("Game ended. Thanks for playing!")
-                    break
-                player_score, ai_score = scores
-                with open("test_log_optimized.txt", "a") as f:
-                    f.write(f"Pattern {pattern_idx}: {pattern}, Game {game_num + 1}, AI Wins: {ai_score}, Ties: {15 - player_score - ai_score}, Player Wins: {player_score}, Params: history_length={ai.history_length}, alpha={ai.alpha:.3f}, epsilon={ai.epsilon:.3f}, freq_bias={ai.freq_bias_weight:.3f}\n")
-                print(f"\nGame Over! Final Score - You: {player_score}, AI: {ai_score}")
-                print(f"OVERALL Winner: {winner}")
-                
+        while True:
+            game_count += 1
+            print(f"\n=== Game {game_count} ===")
+            winner, scores, player_moves = ai.play_game()
+            if winner is None:
+                print("Game ended. Thanks for playing!")
+                break
+            player_score, ai_score = scores
+            tie_count = 15 - player_score - ai_score
+            try:
                 features = meta_ai.get_features(ai, player_score, ai_score, player_moves)
-                target_params = meta_ai.get_target_params(ai_score, player_score)
+                with open("rps_game_log.txt", "a") as f:
+                    f.write(f"Game {game_count}, AI Wins: {ai_score}, Ties: {tie_count}, Player Wins: {player_score}, "
+                            f"Params: history_length={ai.history_length}, alpha={ai.alpha:.3f}, "
+                            f"epsilon={ai.epsilon:.3f}, freq_bias={ai.freq_bias_weight:.3f}, "
+                            f"Features: {features.cpu().numpy().tolist()}\n")
+                target_params = meta_ai.get_target_params(ai_score, player_score, tie_count)
                 meta_ai.store_experience(features, target_params)
                 loss = meta_ai.train(batch_size=16)
                 if loss is not None:
@@ -367,11 +357,13 @@ def main():
                 ai.alpha = new_params['alpha']
                 ai.epsilon = new_params['epsilon']
                 ai.freq_bias_weight = new_params['freq_bias_weight']
-                
                 ai.move_counts = {'R': 0, 'P': 0, 'S': 0}
+            except Exception as e:
+                print(f"Error during Meta-AI processing: {e}. Continuing with current parameters.")
             
-            ai.q_table = defaultdict(lambda: np.zeros(len(ai.actions)))
-            ai.save_q_table()
+            print(f"\nGame Over! Final Score - You: {player_score}, AI: {ai_score}")
+            print(f"Winner: {winner}")
+            
     except KeyboardInterrupt:
         print("\nProgram interrupted. Restoring Q-table...")
         ai.restore_q_table()
