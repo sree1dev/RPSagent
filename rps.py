@@ -140,7 +140,11 @@ class RPS_AI:
                 print(f"\nInvalid key '{key}'! Press R, P, S, or Q: ", end='', flush=True)
             time.sleep(0.01)
 
-    def play_game(self, first_move=None):
+    def get_test_keypress(self, pattern, move_idx):
+        """Return move from pattern for testing."""
+        return pattern[move_idx % len(pattern)]
+
+    def play_game(self, first_move=None, test_pattern=None):
         """Play a 15-round game with per-round Q-table updates."""
         player_score = 0
         ai_score = 0
@@ -150,7 +154,6 @@ class RPS_AI:
 
         start_round = 1
         if first_move in ['R', 'P', 'S']:
-            # Play first round with provided move
             print(f"\nRound 1/15 - Your move: {first_move}")
             ai_move, winner = self.play_round(first_move)
             if not self.validate_q_table():
@@ -168,12 +171,16 @@ class RPS_AI:
 
         for round_num in range(start_round, 16):
             print(f"\nRound {round_num}/15 - Your move (R/P/S): ", end='', flush=True)
-            key = self.get_valid_keypress()
+            if test_pattern:
+                key = self.get_test_keypress(test_pattern, round_num - start_round)
+            else:
+                key = self.get_valid_keypress()
             if key == 'Q':
                 self.restore_q_table()  # Revert to backup on quit
                 return None, None
 
             player_move = key
+            print(f"{player_move}")
             ai_move, winner = self.play_round(player_move)
             if not self.validate_q_table():
                 self.restore_q_table()
@@ -196,32 +203,40 @@ class RPS_AI:
 
 def main():
     ai = RPS_AI()
+    patterns = [
+        ['P', 'S', 'R', 'R', 'S', 'P', 'P', 'R', 'S', 'S', 'P', 'R', 'P', 'S', 'R'],  # Mirror Trap
+        ['R', 'P', 'S', 'R', 'P', 'S', 'R', 'R', 'P', 'P', 'S', 'S', 'R', 'P', 'S'],  # Cycle Breaker
+        ['S', 'S', 'S', 'P', 'P', 'R', 'R', 'S', 'S', 'P', 'P', 'R', 'S', 'P', 'R'],  # Repetition Lure
+        ['P', 'S', 'R', 'P', 'S', 'R', 'S', 'P', 'R', 'S', 'P', 'R', 'P', 'S', 'R'],  # False Cycle
+        ['R', 'P', 'R', 'S', 'P', 'S', 'R', 'P', 'S', 'R', 'P', 'S', 'R', 'P', 'S'],  # Switchback Trap
+        ['P', 'P', 'S', 'S', 'R', 'R', 'P', 'S', 'R', 'P', 'S', 'R', 'P', 'S', 'R'],  # Double Deception
+        ['S', 'R', 'P', 'S', 'R', 'P', 'R', 'S', 'P', 'R', 'S', 'P', 'S', 'R', 'P'],  # Random Facade
+        ['R', 'S', 'P', 'R', 'S', 'P', 'S', 'R', 'P', 'S', 'R', 'P', 'R', 'S', 'P'],  # Memory Overload
+        ['P', 'R', 'S', 'P', 'P', 'R', 'S', 'S', 'P', 'R', 'R', 'S', 'P', 'S', 'R'],  # Bluffing Sequence
+        ['S', 'S', 'P', 'R', 'R', 'S', 'P', 'P', 'R', 'S', 'S', 'P', 'R', 'P', 'S'],  # Frequency Disruptor
+        ['R', 'S', 'P', 'P', 'S', 'R', 'R', 'P', 'S', 'S', 'R', 'P', 'P', 'S', 'R'],  # Reverse Mirror
+        ['P', 'R', 'S', 'R', 'P', 'S', 'P', 'R', 'S', 'P', 'R', 'S', 'R', 'P', 'S'],  # Pattern Feint
+        ['R', 'R', 'P', 'P', 'S', 'S', 'R', 'R', 'P', 'P', 'S', 'S', 'R', 'P', 'S'],  # Tie Inducer
+        ['S', 'P', 'R', 'S', 'R', 'P', 'S', 'P', 'R', 'S', 'R', 'P', 'S', 'P', 'R'],  # Chaos Switch
+        ['R', 'P', 'S', 'R', 'P', 'S', 'P', 'P', 'S', 'S', 'R', 'R', 'P', 'S', 'R'],  # Delayed Repeat
+    ]
     try:
-        while True:
-            print("\n=== Rock Paper Scissors - 15 Rounds ===")
-            winner, scores = ai.play_game()
-            if winner is None:
-                print("Game ended. Thanks for playing!")
-                break
-            player_score, ai_score = scores
-            print(f"\nGame Over! Final Score - You: {player_score}, AI: {ai_score}")
-            print(f"OVERALL Winner: {winner}")
-            print("\nPress Y, R, P, or S to play again, any other key to exit: ", end='', flush=True)
-            while not msvcrt.kbhit():
-                time.sleep(0.01)
-            key = msvcrt.getch().decode('utf-8').upper()
-            if key not in ['Y', 'R', 'P', 'S']:
-                print("\nThanks for playing!")
-                break
-            # If R, P, or S, pass as first move; Y starts normally
-            first_move = key if key in ['R', 'P', 'S'] else None
-            winner, scores = ai.play_game(first_move=first_move)
-            if winner is None:
-                print("Game ended. Thanks for playing!")
-                break
-            player_score, ai_score = scores
-            print(f"\nGame Over! Final Score - You: {player_score}, AI: {ai_score}")
-            print(f"OVERALL Winner: {winner}")
+        for pattern_idx, pattern in enumerate(patterns, 1):
+            print(f"\nTesting Pattern {pattern_idx}: {pattern}")
+            for game_num in range(10):  # 10 games per pattern
+                print(f"\nGame {game_num + 1}")
+                winner, scores = ai.play_game(test_pattern=pattern)
+                if winner is None:
+                    print("Game ended. Thanks for playing!")
+                    break
+                player_score, ai_score = scores
+                with open("test_log.txt", "a") as f:
+                    f.write(f"Pattern {pattern_idx}: {pattern}, Game {game_num + 1}, AI Wins: {ai_score}, Ties: {15 - player_score - ai_score}, Player Wins: {player_score}\n")
+                print(f"\nGame Over! Final Score - You: {player_score}, AI: {ai_score}")
+                print(f"OVERALL Winner: {winner}")
+            # Optionally reset Q-table between patterns
+            # ai.q_table = defaultdict(lambda: np.zeros(len(ai.actions)))
+            # ai.save_q_table()
     except KeyboardInterrupt:
         print("\nProgram interrupted. Restoring Q-table...")
         ai.restore_q_table()
