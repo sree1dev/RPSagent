@@ -109,42 +109,40 @@ class RPS_AI:
         next_q = np.max(self.q_table[next_state])
         self.q_table[state][action_idx] = current_q + self.alpha * (reward + self.gamma * next_q - current_q)
 
-    def determine_winner(self, human_move, ai_move):
+    def determine_winner(self, player_move, ai_move):
         """Determine round winner and return reward."""
-        if human_move == ai_move:
+        if player_move == ai_move:
             return 'Tie', 0
-        elif (human_move == 'R' and ai_move == 'S') or \
-             (human_move == 'P' and ai_move == 'R') or \
-             (human_move == 'S' and ai_move == 'P'):
-            return 'human', -1
+        elif (player_move == 'R' and ai_move == 'S') or \
+             (player_move == 'P' and ai_move == 'R') or \
+             (player_move == 'S' and ai_move == 'P'):
+            return 'Player', -1
         else:
             return 'AI', 1
 
-    def play_round(self, human_move):
+    def play_round(self, player_move):
         """Play a single round and update Q-table."""
         state = self.get_state()
         ai_move = self.choose_action(state)
-        winner, reward = self.determine_winner(human_move, ai_move)
-        next_state = self.get_state() + (human_move, ai_move)
-        self.history.extend([human_move, ai_move])
+        winner, reward = self.determine_winner(player_move, ai_move)
+        next_state = self.get_state() + (player_move, ai_move)
+        self.history.extend([player_move, ai_move])
         self.update_q_table(state, ai_move, reward, next_state)
         return ai_move, winner
 
     def get_valid_keypress(self):
-        """Get a valid keypress (R, P, S, or Q), and display it."""
+        """Get a valid keypress (R, P, S, or Q)."""
         while True:
             if msvcrt.kbhit():
                 key = msvcrt.getch().decode('utf-8').upper()
                 if key in ['R', 'P', 'S', 'Q']:
-                    print(key)  # Echo the key so the user sees their input
                     return key
                 print(f"\nInvalid key '{key}'! Press R, P, S, or Q: ", end='', flush=True)
             time.sleep(0.01)
 
-
     def play_game(self, first_move=None):
         """Play a 15-round game with per-round Q-table updates."""
-        human_score = 0
+        player_score = 0
         ai_score = 0
         self.history = []  # Reset history for new game
         self.backup_q_table()  # Backup Q-table before game
@@ -161,11 +159,11 @@ class RPS_AI:
             self.save_q_table()
             print(f"AI plays: {ai_move}")
             print(f"Result: {winner}")
-            if winner == 'human':
-                human_score += 1
+            if winner == 'Player':
+                player_score += 1
             elif winner == 'AI':
                 ai_score += 1
-            print(f"Score - You: {human_score}, AI: {ai_score}")
+            print(f"Score - You: {player_score}, AI: {ai_score}")
             start_round = 2
 
         for round_num in range(start_round, 16):
@@ -175,8 +173,8 @@ class RPS_AI:
                 self.restore_q_table()  # Revert to backup on quit
                 return None, None
 
-            human_move = key
-            ai_move, winner = self.play_round(human_move)
+            player_move = key
+            ai_move, winner = self.play_round(player_move)
             if not self.validate_q_table():
                 self.restore_q_table()
                 return None, None
@@ -184,17 +182,17 @@ class RPS_AI:
             print(f"\nAI plays: {ai_move}")
             print(f"Result: {winner}")
 
-            if winner == 'human':
-                human_score += 1
+            if winner == 'Player':
+                player_score += 1
             elif winner == 'AI':
                 ai_score += 1
 
-            print(f"Score - You: {human_score}, AI: {ai_score}")
+            print(f"Score - You: {player_score}, AI: {ai_score}")
 
         if os.path.exists(self.backup_q_table_file):
             os.remove(self.backup_q_table_file)
-        return ('human' if human_score > ai_score else 'AI' if ai_score > human_score else 'Tie',
-                (human_score, ai_score))
+        return ('Player' if player_score > ai_score else 'AI' if ai_score > player_score else 'Tie',
+                (player_score, ai_score))
 
 def main():
     ai = RPS_AI()
@@ -203,10 +201,10 @@ def main():
             print("\n=== Rock Paper Scissors - 15 Rounds ===")
             winner, scores = ai.play_game()
             if winner is None:
-                print("Game ended")
+                print("Game ended. Thanks for playing!")
                 break
-            human_score, ai_score = scores
-            print(f"\nGame Over! Final Score - You: {human_score}, AI: {ai_score}")
+            player_score, ai_score = scores
+            print(f"\nGame Over! Final Score - You: {player_score}, AI: {ai_score}")
             print(f"OVERALL Winner: {winner}")
             print("\nPress Y, R, P, or S to play again, any other key to exit: ", end='', flush=True)
             while not msvcrt.kbhit():
@@ -221,8 +219,8 @@ def main():
             if winner is None:
                 print("Game ended. Thanks for playing!")
                 break
-            human_score, ai_score = scores
-            print(f"\nGame Over! Final Score - You: {human_score}, AI: {ai_score}")
+            player_score, ai_score = scores
+            print(f"\nGame Over! Final Score - You: {player_score}, AI: {ai_score}")
             print(f"OVERALL Winner: {winner}")
     except KeyboardInterrupt:
         print("\nProgram interrupted. Restoring Q-table...")
