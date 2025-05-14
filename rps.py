@@ -182,7 +182,7 @@ class RPS_AI:
             'S': self.move_counts['P'] / total_moves
         }
         for i, action in enumerate(self.actions):
-            q_values[i] += temp_freq_bias_weight * freq_bias[action] * 1.5  # Amplify freq_bias impact
+            q_values[i] += temp_freq_bias_weight * freq_bias[action] * 2.0  # Increased from 1.5
         return self.actions[np.argmax(q_values)]
 
     def update_q_table(self, state, action, reward, next_state):
@@ -206,7 +206,7 @@ class RPS_AI:
             reward = -self.penalty_scale
         elif high_level_strategy == 'explore' and is_safe_mode:
             reward += 0.1 * self.new_states_visited
-        self.update_q_table(state, ai_move, reward, next_state)
+        self.update_q_table(state, action=ai_move, reward=reward, next_state=next_state)
         if winner == 'Player':
             self.player_score += 1
         elif winner == 'AI':
@@ -233,7 +233,7 @@ class RPS_AI:
         player_moves = []
         ai_moves = []
         for round_num in range(1, 16):
-            print(f"\nRound {round_num}/15 - ", end='', flush=True)
+            print(f"\nRound {round_num}/15 - Your move (R/P/S): ", end='', flush=True)
             key = self.get_valid_keypress()
             if key == 'Q':
                 self.restore_q_table()
@@ -253,17 +253,16 @@ class RPS_AI:
                 print(f"Note: AI in Safe Learning Mode.")
         if os.path.exists(self.backup_q_table_file):
             os.remove(self.backup_q_table_file)
-        # Display move patterns
         if len(player_moves) == 15:  # Only for completed games
             human_pattern = ' '.join(player_moves)
             ai_pattern = ' '.join(ai_moves)
             print(f"\nHuman Pattern: {human_pattern}")
             print(f"AI Pattern: {ai_pattern}")
-        return ('Player' if self.player_score > self.ai_score else 'AI' if self.ai_score > self.player_score else 'Tie',
+        return ('Player' if self.player_score > self.ai_score else 'AI' if self.ai_score > self.ai_score else 'Tie',
                 (self.player_score, self.ai_score), player_moves, ai_moves)
 
 class MetaAISupervisor:
-    def __init__(self, input_size=25, hidden_size=16, learning_rate=0.0005, buffer_size=300):
+    def __init__(self, input_size=25, hidden_size=16, learning_rate=0.0005, buffer_size=200):  # Reduced buffer_size
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Using device: {self.device}")
         self.model = MetaAINeuralNetwork(input_size, hidden_size).to(self.device)
@@ -294,10 +293,11 @@ class MetaAISupervisor:
         self.model_file = "meta_ai_model.pth"
         self.reward_model_file = "reward_predictor_model.pth"
         self.load_model()
-        self.dynamic_features = []
+        self.dynamic_features = [0.0] * 4  # Initialize with 4 placeholder features
         self.last_pattern = None
         self.pattern_losses = 0
         self.loss_history = deque(maxlen=50)
+        self.win_history = deque(maxlen=20)  # Track recent wins for autonomy
 
     def load_model(self):
         if os.path.exists(self.model_file):
@@ -323,17 +323,31 @@ class MetaAISupervisor:
             print(f"Error saving models: {e}")
 
     def reset_model_if_stuck(self, game_count):
-        if game_count >= 50 and len(self.loss_history) == 50:
-            avg_loss = sum(self.loss_history) / len(self.loss_history)
-            if avg_loss > 4.0:
-                print(f"High average loss ({avg_loss:.4f}) after {game_count} games. Resetting neural networks.")
+        if game_count >= 20 and len(self.win_history) == 20:  # Earlier reset
+            win_rate = sum(1 for w in self.win_history if w == 'AI') / 20
+            if win_rate < 0.5:
+                print(f"Low win rate ({win_rate:.2f}) after {game_count} games. Resetting neural networks.")
                 self.model = MetaAINeuralNetwork(self.input_size, 16).to(self.device)
                 self.reward_predictor = RewardPredictor(self.input_size, 16).to(self.device)
                 self.optimizer = optim.Adam(self.model.parameters(), lr=0.0005)
                 self.reward_optimizer = optim.Adam(self.reward_predictor.parameters(), lr=0.001)
                 self.replay_buffer.clear()
-                self.dynamic_features = []
+                self.dynamic_features = [0.0] * 4
                 self.save_model()
+
+    def adjust_learning_rate(self):
+        if len(self.loss_history) >= 10:
+            avg_loss = sum(self.loss_history) / len(self.loss_history)
+            if avg_loss > 2.0:
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] = min(param_group['lr'] * 1.5, 0.001)
+                for param_group in self.reward_optimizer.param_groups:
+                    param_group['lr'] = min(param_group['lr'] * 1.5, 0.002)
+            elif avg_loss < 0.5:
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] = max(param_group['lr'] * 0.5, 0.0001)
+                for param_group in self.reward_optimizer.param_groups:
+                    param_group['lr'] = max(param_group['lr'] * 0.5, 0.0002)
 
     def get_ngram_counts(self, moves, n=3):
         if len(moves) < n:
@@ -343,17 +357,19 @@ class MetaAISupervisor:
             if all(moves[i + j] == moves[i] for j in range(n)):
                 count += 1
             elif n == 3 and moves[i:i+3] in [['S', 'R', 'P'], ['R', 'P', 'S'], ['P', 'S', 'R']]:
-                count += 1
+                count += 2  # Increased weight for cyclic patterns
         return count / (len(moves) - n + 1) if len(moves) >= n else 0.0
 
     def detect_pattern_failure(self, player_moves, ai, winner):
         if len(player_moves) < 3:
             return 0.0
+        recent_wins = sum(1 for i in range(max(0, len(player_moves)-3), len(player_moves))
+                         if ai.determine_winner(player_moves[i], ai.history[2*i+1])[0] == 'Player')
         pattern = tuple(player_moves[-3:])
-        if self.last_pattern == pattern and winner == 'Player':
+        if recent_wins >= 2:  # Trigger on recent player wins
             self.pattern_losses += 1
         else:
-            self.pattern_losses = 0
+            self.pattern_losses = max(0, self.pattern_losses - 1)
         self.last_pattern = pattern
         return min(self.pattern_losses / 3.0, 1.0)
 
@@ -418,7 +434,12 @@ class MetaAISupervisor:
             (ai.move_counts['R'] - ai.move_counts['S']) / 15.0,
             (ai.q_table[tuple(ai.history[-ai.history_length * 2:])].max() if ai.history else 0.0)
         ]
-        return [random.choice(feature_options)] if len(self.dynamic_features) < 4 else []
+        # Prioritize features based on recent performance
+        if len(self.win_history) >= 5:
+            win_rate = sum(1 for w in self.win_history if w == 'AI') / len(self.win_history)
+            if win_rate < 0.5:
+                feature_options.append((ai_score - player_score) / 15.0)  # Emphasize score difference
+        return [random.choice(feature_options)] if len(self.dynamic_features) < 6 and random.random() < 0.5 else []  # Increased to 6, prob 0.5
 
     def get_target_params(self, ai_score, player_score, tie_count, player_moves, safe_mode_rounds):
         reward = ai_score - player_score
@@ -432,8 +453,8 @@ class MetaAISupervisor:
         pattern_strength = sum(1 for i in range(len(player_moves)-2) if player_moves[i:i+3] == player_moves[i:i+3]) / 12.0 if len(player_moves) >= 3 else 0.0
         target_history_length = self.min_history_length + (self.max_history_length - self.min_history_length) * norm_reward
         target_alpha = self.min_alpha + (self.max_alpha - self.min_alpha) * norm_reward
-        target_epsilon = self.min_epsilon + (self.max_epsilon - self.min_epsilon) * (player_win_rate + freq_imbalance + pattern_strength * 1.5) / 3  # Amplify pattern_strength
-        target_freq_bias = self.min_freq_bias + (self.max_freq_bias - self.min_freq_bias) * (freq_imbalance + pattern_strength * 1.5) / 2
+        target_epsilon = self.min_epsilon + (self.max_epsilon - self.min_epsilon) * (player_win_rate + freq_imbalance + pattern_strength * 2.0) / 3  # Increased weight
+        target_freq_bias = self.min_freq_bias + (self.max_freq_bias - self.min_freq_bias) * (freq_imbalance + pattern_strength * 2.0) / 2
         target_penalty_scale = self.min_penalty_scale + (self.max_penalty_scale - self.min_penalty_scale) * (player_win_rate + safe_mode_rounds / 15.0) / 2
         target_reward_scale = self.min_reward_scale + (self.max_reward_scale - self.min_reward_scale) * norm_reward
         target_loss_scale = self.max_loss_scale - (self.max_loss_scale - self.min_loss_scale) * (player_win_rate + freq_imbalance) / 2
@@ -450,10 +471,11 @@ class MetaAISupervisor:
     def store_experience(self, features, target_params, is_safe_mode=False):
         self.replay_buffer.append((features, target_params, 2.0 if is_safe_mode else 1.0))
 
-    def train(self, batch_size=16):
-        if len(self.replay_buffer) < batch_size:
-            print(f"Skipping training: replay_buffer size {len(self.replay_buffer)} < batch_size {batch_size}")
+    def train(self, batch_size=8):  # Reduced batch_size
+        if len(self.replay_buffer) < 4:  # Minimum threshold
+            print(f"Skipping training: replay_buffer size {len(self.replay_buffer)} < 4")
             return None
+        batch_size = min(batch_size, len(self.replay_buffer))  # Use available experiences
         batch = random.sample(self.replay_buffer, batch_size)
         features, targets, weights = zip(*batch)
         features = torch.stack(features).to(self.device)
@@ -489,6 +511,7 @@ class MetaAISupervisor:
         torch.nn.utils.clip_grad_norm_(self.controller.parameters(), max_norm=0.5)
         self.controller_optimizer.step()
 
+        self.adjust_learning_rate()  # Adaptive learning rate
         self.save_model()
         print(f"Meta-AI Training Loss: {weighted_loss.item():.4f}")
         self.loss_history.append(weighted_loss.item())
@@ -499,10 +522,11 @@ class MetaAISupervisor:
         with torch.no_grad():
             suggested_params = self.model(features).cpu().numpy()
             reward_params = self.reward_predictor(features).cpu().numpy()
-        history_length = max(self.min_history_length, min(self.max_history_length, int(round(suggested_params[0]))))
+        pattern_failure = self.detect_pattern_failure(player_moves, ai, 'Player' if player_score > ai_score else 'AI')
+        history_length = max(self.min_history_length, min(self.max_history_length, int(round(suggested_params[0] + pattern_failure))))
         alpha = max(self.min_alpha, min(self.max_alpha, suggested_params[1]))
-        epsilon = max(self.min_epsilon, min(self.max_epsilon, suggested_params[2]))
-        freq_bias_weight = max(self.min_freq_bias, min(self.max_freq_bias, suggested_params[3]))
+        epsilon = max(self.min_epsilon, min(self.max_epsilon, suggested_params[2] + pattern_failure * 0.1))
+        freq_bias_weight = max(self.min_freq_bias, min(self.max_freq_bias, suggested_params[3] + pattern_failure * 0.05))
         penalty_scale = max(self.min_penalty_scale, min(self.max_penalty_scale, reward_params[0] * (self.max_penalty_scale - self.min_penalty_scale) + self.min_penalty_scale))
         reward_scale = max(self.min_reward_scale, min(self.max_reward_scale, reward_params[1] * (self.max_reward_scale - self.min_reward_scale) + self.min_reward_scale))
         loss_scale = max(self.min_loss_scale, min(self.max_loss_scale, reward_params[2] * (self.max_loss_scale - self.min_loss_scale) + self.min_loss_scale))
@@ -519,7 +543,7 @@ class MetaAISupervisor:
 def main():
     global game_count
     ai = RPS_AI()
-    meta_ai = MetaAISupervisor(input_size=25, hidden_size=16, buffer_size=300)
+    meta_ai = MetaAISupervisor(input_size=25, hidden_size=16, buffer_size=200)
     game_count = 0
     baseline_ai_score = 7.5
     max_games = 1000
@@ -556,10 +580,11 @@ def main():
                 target_params = meta_ai.get_target_params(ai_score, player_score, tie_count, player_moves, safe_mode_rounds)
                 meta_reward = 0.1 * ai.new_states_visited + 0.2 * (features[0, 6].item()) + 0.5 * (ai_score - baseline_ai_score)
                 meta_ai.store_experience(features.squeeze(0), target_params, is_safe_mode=safe_mode_rounds > 0)
-                if random.random() < 0.25:  # Increased from 0.2
+                if random.random() < 0.5:  # Increased probability
                     meta_ai.dynamic_features.extend(meta_ai.propose_feature(ai, player_score, ai_score, ai.current_round))
-                loss = meta_ai.train(batch_size=16)
+                loss = meta_ai.train(batch_size=8)
                 meta_ai.reset_model_if_stuck(game_count)
+                meta_ai.win_history.append(winner)  # Track wins
                 new_params = meta_ai.suggest_parameters(ai, player_score, ai_score, player_moves, safe_mode_rounds)
                 print(f"Meta-AI Suggested Params: {new_params}, Strategy: {high_level_strategy}, Meta-Reward: {meta_reward:.3f}")
                 ai.history_length = new_params['history_length']
